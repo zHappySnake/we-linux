@@ -73,17 +73,14 @@ looks for Explorer's `Progman` / `WorkerW` windows, which Wine doesn't have.
 
 ## Install
 
-1. Build and install from source:
+1. Install [`we-linux-git`](https://aur.archlinux.org/packages/we-linux-git) from the AUR, for
+   example with an AUR helper:
 
    ```sh
-   sudo pacman -S --needed base-devel git mingw-w64-gcc xorg-xwininfo xorg-xprop
-   git clone https://github.com/zHappySnake/we-linux.git
-   cd we-linux
-   make
-   sudo make install
+   yay -S we-linux-git
    ```
 
-   This installs to `/usr/local`; pass `PREFIX=/usr` to `make install` to change that.
+   Or build it yourself (see [Building from source](#building-from-source) below).
 
 2. In Steam, right-click Wallpaper Engine → **Properties**:
    - **Compatibility:** tick "Force the use of a specific Steam Play compatibility tool" and choose
@@ -91,7 +88,7 @@ looks for Explorer's `Progman` / `WorkerW` windows, which Wine doesn't have.
    - **General → Launch options:**
 
      ```
-     /usr/local/bin/we-linux %command%
+     /usr/bin/we-linux %command%
      ```
 
 3. Press **Play**. If Steam asks which version to launch, either choice is fine: `we-linux` always
@@ -100,6 +97,19 @@ looks for Explorer's `Progman` / `WorkerW` windows, which Wine doesn't have.
 On the first launch Wallpaper Engine shows its welcome dialog; go through it, then pick a wallpaper
 as you would on Windows. After that, Wallpaper Engine starts with your last wallpapers. Quit it
 from its tray icon.
+
+### Building from source
+
+```sh
+sudo pacman -S --needed base-devel git mingw-w64-gcc xorg-xwininfo xorg-xprop
+git clone https://github.com/zHappySnake/we-linux.git
+cd we-linux
+make
+sudo make install
+```
+
+This installs to `/usr/local`, so the launch option becomes `/usr/local/bin/we-linux %command%`.
+Pass `PREFIX=/usr` to `make install` to install to `/usr` instead.
 
 To work on we-linux itself, skip `make install` and point the launch option at `bin/we-linux` in
 your checkout; it uses the files in `build/` directly.
@@ -117,7 +127,7 @@ It never modifies Wallpaper Engine's installation.
 ## Troubleshooting
 
 - **Logs.** Put `WE_LINUX_DEBUG=1` in front of the launch option
-  (`WE_LINUX_DEBUG=1 /usr/local/bin/we-linux %command%`) to write Proton's log and the shim's log
+  (`WE_LINUX_DEBUG=1 /usr/bin/we-linux %command%`) to write Proton's log and the shim's log
   to `~/.local/state/we-linux/logs/`. Remove it again afterwards; it slows Wine down.
 - **Wallpaper Engine stopped right after starting.** As a safety net, `we-linux` stops Wallpaper
   Engine if its wallpaper window ever ends up in front of other windows instead of behind them, and
@@ -140,7 +150,8 @@ It never modifies Wallpaper Engine's installation.
 1. Remove the launch option in Steam (and the forced Proton version, if you like).
 2. Delete the "Wallpaper Engine desktop (we-linux)" rule in System Settings → Window Management →
    Window Rules.
-3. Remove the program (`sudo make uninstall` in the source directory) and its cache and logs:
+3. Remove the program (`sudo pacman -R we-linux-git`, or `sudo make uninstall` in the source
+   directory if you built it yourself) and its cache and logs:
 
    ```sh
    rm -rf ~/.cache/we-linux ~/.local/state/we-linux

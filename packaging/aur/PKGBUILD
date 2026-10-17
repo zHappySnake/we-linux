@@ -2,7 +2,7 @@
 
 pkgname=we-linux-git
 _pkgname=we-linux
-pkgver=r8.b021286
+pkgver=r8.60cbbb2
 pkgrel=1
 pkgdesc="Run the Steam copy of Wallpaper Engine as your KDE Plasma wallpaper, with its original UI"
 arch=('x86_64')
