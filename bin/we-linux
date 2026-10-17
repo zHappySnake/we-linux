@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# we-linux: run the Steam copy of Wallpaper Engine under Proton as a desktop wallpaper.
+#
+# Usage:
+#   Steam launch option:  /path/to/we-linux %command%
+#   Standalone (dev):     we-linux            # launches through Proton itself
+#
+# Environment:
+#   WE_LINUX_DEBUG=1      enable Proton/Wine logging into ./logs (or $WE_LINUX_LOGDIR)
+#   WE_LINUX_PROTON=name  Proton directory under steamapps/common (default: Proton - Experimental)
+set -euo pipefail
+
+APPID=431960
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+STEAM_ROOT="${STEAM_ROOT:-$HOME/.local/share/Steam}"
+
+log() { printf '[we-linux] %s\n' "$*" >&2; }
+
+# Locate the library folder that holds Wallpaper Engine.
+find_library() {
+    local vdf="$STEAM_ROOT/steamapps/libraryfolders.vdf" lib
+    while read -r lib; do
+        if [[ -f "$lib/steamapps/appmanifest_$APPID.acf" ]]; then
+            printf '%s\n' "$lib"
+            return 0
+        fi
+    done < <(sed -n 's/^[[:space:]]*"path"[[:space:]]*"\(.*\)"/\1/p' "$vdf")
+    return 1
+}
+
+LIBRARY="$(find_library)" || { log "Wallpaper Engine (app $APPID) is not installed through Steam."; exit 1; }
+WE_DIR="$LIBRARY/steamapps/common/wallpaper_engine"
+COMPAT_DATA="$LIBRARY/steamapps/compatdata/$APPID"
+
+if [[ "${WE_LINUX_DEBUG:-0}" == 1 ]]; then
+    LOGDIR="${WE_LINUX_LOGDIR:-$ROOT/logs}"
+    mkdir -p "$LOGDIR"
+    export PROTON_LOG=1 PROTON_LOG_DIR="$LOGDIR"
+    export WINEDEBUG="${WINEDEBUG:-+seh,+loaddll,err+all,warn+win}"
+    export WE_LINUX_SHIM_LOG="Z:${LOGDIR//\//\\}"
+    log "debug logging to $LOGDIR"
+fi
+
+DESKTOP_TITLE="Wallpaper Engine Desktop"   # must match DESKTOP_TITLE in shim/weshim.c
+
+# Bounding box of all monitors as "x y w h", from XWayland's view of the outputs.
+virtual_screen() {
+    xrandr --listmonitors 2>/dev/null | awk 'NR > 1 {
+        split($3, a, /[\/x+]/)   # 1920/521x1080/293+0+0 -> w, mmw, h, mmh, x, y
+        w = a[1]; h = a[3]; x = a[5]; y = a[6]
+        if (n++ == 0 || x < x0) x0 = x;  if (n == 1 || y < y0) y0 = y
+        if (x + w > x1) x1 = x + w;      if (y + h > y1) y1 = y + h
+    } END { print x0, y0, x1 - x0, y1 - y0 }'
+}
+
+# KDE: a forced window rule keeps the desktop window borderless, spanning every monitor and below all
+# other windows. "Force" also makes KWin ignore Wine's fullscreen request, which would otherwise put
+# the window above everything, panels included.
+setup_kwin() {
+    local rc=kwinrulesrc g=we-linux-desktop rules x y w h qdbus
+    command -v kwriteconfig6 >/dev/null && command -v kreadconfig6 >/dev/null || { log "kwriteconfig6 not found"; return 1; }
+    qdbus="$(command -v qdbus6 || command -v qdbus)" || { log "qdbus not found"; return 1; }
+    read -r x y w h < <(virtual_screen)
+    [[ -n "$h" ]] || { log "could not determine the screen layout"; return 1; }
+
+    set_rule() { kwriteconfig6 --file "$rc" --group "$g" --key "$1" -- "$2"; }
+    set_rule Description "Wallpaper Engine desktop (we-linux)"
+    set_rule wmclass steam_app_$APPID;    set_rule wmclassmatch 1; set_rule wmclasscomplete false
+    set_rule title "$DESKTOP_TITLE";      set_rule titlematch 1
+    for key in below noborder skiptaskbar skippager skipswitcher; do set_rule "$key" true; set_rule "${key}rule" 2; done
+    for key in fullscreen above acceptfocus; do set_rule "$key" false; set_rule "${key}rule" 2; done
+    set_rule position "$x,$y";            set_rule positionrule 2
+    set_rule size "$w,$h";                set_rule sizerule 2
+
+    rules="$(kreadconfig6 --file "$rc" --group General --key rules)"
+    [[ ",$rules," == *",$g,"* ]] || kwriteconfig6 --file "$rc" --group General --key rules -- "${rules:+$rules,}$g"
+    "$qdbus" org.kde.KWin /KWin reconfigure >/dev/null
+
+    # Rules can't express "all virtual desktops" portably, so a small script handles that.
+    "$qdbus" org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript we-desktop >/dev/null 2>&1 || true
+    "$qdbus" org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$ROOT/kwin/we-desktop.js" we-desktop >/dev/null &&
+        "$qdbus" org.kde.KWin /Scripting org.kde.kwin.Scripting.start >/dev/null
+    log "KWin rule installed for ${w}x${h}+${x}+${y}"
+}
+
+# Safety net (second line behind the KWin script's): if the desktop window isn't kept below, it covers
+# every other window, so stop Wallpaper Engine instead of leaving the user stuck behind it.
+# _NET_WM_STATE_FULLSCREEN alone isn't checked: Wine sets it before mapping and KWin leaves it there
+# even though the forced rule keeps the window out of fullscreen.
+guard_desktop() {
+    set +e
+    local id state
+    while pgrep -f 'wallpaper64\.exe' >/dev/null || (( SECONDS < 120 )); do
+        id="$(xwininfo -root -tree 2>/dev/null | awk -v t="\"$DESKTOP_TITLE\":" 'index($0, t) { print $1; exit }')"
+        if [[ -n "$id" ]] && ! xprop -id "$id" _NET_WM_STATE 2>/dev/null | grep -q _NET_WM_STATE_BELOW; then
+            sleep 1   # give KWin a moment to apply the rule after mapping
+            state="$(xprop -id "$id" _NET_WM_STATE 2>/dev/null)"
+            if [[ -n "$state" && "$state" != *_NET_WM_STATE_BELOW* ]]; then
+                log "desktop window is not kept below ($state); stopping Wallpaper Engine"
+                pkill -f 'wallpaper64\.exe'
+                return
+            fi
+        fi
+        sleep 0.5
+    done
+}
+
+if [[ "${XDG_CURRENT_DESKTOP:-}" == *KDE* ]]; then
+    setup_kwin || { log "cannot pin the desktop window on this session; not starting."; exit 1; }
+    guard_desktop &
+else
+    log "only KDE Plasma is supported for now."; exit 1
+fi
+
+# Windows-side pieces, built by `make`. Paths go through Wine's Z: drive.
+WELAUNCH="$ROOT/build/welaunch.exe"
+SHIM="Z:$(sed 's|/|\\|g' <<<"$ROOT/build/weshim.dll")"
+[[ -f "$WELAUNCH" && -f "$ROOT/build/weshim.dll" ]] || { log "Run 'make' in $ROOT first."; exit 1; }
+# launcher.exe would pick wallpaper32.exe; we always run the 64-bit build with the shim loaded.
+TARGET=("$WELAUNCH" "$SHIM" "$WE_DIR/wallpaper64.exe")
+
+if [[ $# -gt 0 ]]; then
+    # Launched by Steam with %command%: swap launcher.exe for our launcher, keep everything else.
+    args=()
+    for a in "$@"; do
+        if [[ "$a" == */wallpaper_engine/launcher.exe ]]; then args+=("${TARGET[@]}"); else args+=("$a"); fi
+    done
+    exec "${args[@]}"
+fi
+
+# Standalone: build the same command Steam would. Steam must be running so steam_api can verify ownership.
+pgrep -x steam >/dev/null || { log "Steam must be running."; exit 1; }
+PROTON_DIR="$STEAM_ROOT/steamapps/common/${WE_LINUX_PROTON:-Proton - Experimental}"
+RUNTIME="$STEAM_ROOT/steamapps/common/SteamLinuxRuntime_sniper/_v2-entry-point"
+[[ -x "$PROTON_DIR/proton" ]] || { log "Proton not found at $PROTON_DIR"; exit 1; }
+
+export STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT"
+export STEAM_COMPAT_DATA_PATH="$COMPAT_DATA"
+export STEAM_COMPAT_INSTALL_PATH="$WE_DIR"
+export SteamAppId=$APPID SteamGameId=$APPID
+
+cd "$WE_DIR"
+exec "$RUNTIME" --verb=waitforexitandrun -- "$PROTON_DIR/proton" waitforexitandrun "${TARGET[@]}"
