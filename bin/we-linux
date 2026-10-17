@@ -105,26 +105,54 @@ guard_desktop() {
     done
 }
 
-if [[ "${XDG_CURRENT_DESKTOP:-}" == *KDE* ]]; then
-    setup_kwin || { log "cannot pin the desktop window on this session; not starting."; exit 1; }
-    guard_desktop &
-else
-    log "only KDE Plasma is supported for now."; exit 1
-fi
-
-# Windows-side pieces, built by `make`. Paths go through Wine's Z: drive.
+# Built by `make`. Windows-side paths go through Wine's Z: drive.
+winpath() { printf 'Z:%s' "${1//\//\\}"; }
 WELAUNCH="$ROOT/build/welaunch.exe"
-SHIM="Z:$(sed 's|/|\\|g' <<<"$ROOT/build/weshim.dll")"
-[[ -f "$WELAUNCH" && -f "$ROOT/build/weshim.dll" ]] || { log "Run 'make' in $ROOT first."; exit 1; }
+AGENT="$ROOT/build/we-linux-agent"
+for f in "$WELAUNCH" "$ROOT/build/weshim.dll" "$AGENT"; do
+    [[ -f "$f" ]] || { log "$f is missing; run 'make' in $ROOT first."; exit 1; }
+done
 # launcher.exe would pick wallpaper32.exe; we always run the 64-bit build with the shim loaded.
-TARGET=("$WELAUNCH" "$SHIM" "$WE_DIR/wallpaper64.exe")
+TARGET=("$WELAUNCH" "$(winpath "$ROOT/build/weshim.dll")" "$WE_DIR/wallpaper64.exe")
+
+[[ "${XDG_CURRENT_DESKTOP:-}" == *KDE* ]] || { log "only KDE Plasma is supported for now."; exit 1; }
+
+# The agent relays the native window list from KWin to the shim through this file.
+STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/we-linux"
+mkdir -p "$STATE_DIR"
+export WE_LINUX_STATE="$(winpath "$STATE_DIR/windows")"
+pkill -x we-linux-agent 2>/dev/null || true
+"$AGENT" "$STATE_DIR/windows" &
+AGENT_PID=$!
+
+setup_kwin || { kill "$AGENT_PID"; log "cannot pin the desktop window on this session; not starting."; exit 1; }
+
+# Runs alongside Wallpaper Engine (this script execs into it) and cleans up after it.
+supervise() {
+    guard_desktop
+    while pgrep -f 'wallpaper64\.exe' >/dev/null; do sleep 2; done
+    kill "$AGENT_PID" 2>/dev/null
+}
+supervise &
 
 if [[ $# -gt 0 ]]; then
-    # Launched by Steam with %command%: swap launcher.exe for our launcher, keep everything else.
-    args=()
-    for a in "$@"; do
-        if [[ "$a" == */wallpaper_engine/launcher.exe ]]; then args+=("${TARGET[@]}"); else args+=("$a"); fi
+    # Launched by Steam with %command%: swap Wallpaper Engine's executable for our launcher.
+    args=() swapped=0
+    while (( $# )); do
+        if (( !swapped )) && [[ "$1" =~ /wallpaper_engine/(launcher|wallpaper32|wallpaper64)\.exe$ ]]; then
+            args+=("${TARGET[@]}") swapped=1
+            # "-run <exe>" tells launcher.exe which build to start; we've already chosen.
+            [[ "${2:-}" == -run ]] && shift 2
+        else
+            args+=("$1")
+        fi
+        shift
     done
+    if (( !swapped )); then
+        kill "$AGENT_PID"
+        log "couldn't find Wallpaper Engine's executable in the Steam command: $*"
+        exit 1
+    fi
     exec "${args[@]}"
 fi
 

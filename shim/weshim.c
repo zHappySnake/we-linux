@@ -2,13 +2,12 @@
  * weshim.dll: loaded into wallpaper64.exe by welaunch.exe.
  *
  * Patches the main executable's import table so the calls Wallpaper Engine uses to
- * attach itself to the Windows desktop (Progman/WorkerW) go through us first.
- * This stage only logs them and passes them through.
+ * attach itself to the Windows desktop (Progman/WorkerW) go through us first, and
+ * provides the stand-in desktop it attaches to. native.c adds the native Linux windows.
  *
  * Set WE_LINUX_SHIM_LOG to a directory to get weshim-<pid>.log there.
  */
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "shim.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -27,7 +26,7 @@ static void log_open(void)
     log_file = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 }
 
-static void shim_log(const char *fmt, ...)
+void shim_log(const char *fmt, ...)
 {
     if (log_file == INVALID_HANDLE_VALUE) return;
     char buf[1024];
@@ -45,7 +44,7 @@ static void shim_log(const char *fmt, ...)
 }
 
 /* "hwnd{class "title" pid}" for log lines; uses a small ring of buffers so several fit in one logf. */
-static const char *describe(HWND hwnd)
+const char *describe(HWND hwnd)
 {
     static char ring[8][192];
     static LONG next;
@@ -203,12 +202,12 @@ static BOOL CALLBACK enum_thunk(HWND hwnd, LPARAM lp)
     return r;
 }
 
+/* Wine's windows first, then the native Linux windows Wine can't see. */
 static BOOL WINAPI hook_EnumWindows(WNDENUMPROC proc, LPARAM lp)
 {
     struct enum_ctx ctx = { proc, lp, 0 };
-    BOOL r = EnumWindows(enum_thunk, (LPARAM)&ctx);
-    shim_log("EnumWindows(%p) visited %d -> %d", (void *)proc, ctx.visited, r);
-    return r;
+    if (!EnumWindows(enum_thunk, (LPARAM)&ctx)) return FALSE;
+    return native_enum(proc, lp);
 }
 
 static BOOL WINAPI hook_EnumChildWindows(HWND parent, WNDENUMPROC proc, LPARAM lp)
@@ -278,8 +277,6 @@ static BOOL WINAPI hook_CreateProcessW(LPCWSTR app, LPWSTR cmd, LPSECURITY_ATTRI
 
 /* ---- import table patching ---------------------------------------------- */
 
-struct hook { const char *dll; const char *name; void *fn; };
-
 static const struct hook hooks[] = {
     { "user32.dll",   "FindWindowW",           hook_FindWindowW },
     { "user32.dll",   "FindWindowExW",         hook_FindWindowExW },
@@ -296,6 +293,13 @@ static const struct hook hooks[] = {
     { "user32.dll",   "SystemParametersInfoW", hook_SystemParametersInfoW },
     { "kernel32.dll", "CreateProcessW",        hook_CreateProcessW },
 };
+
+static const struct hook *find_hook(const struct hook *table, size_t count, const char *dll, const char *fn)
+{
+    for (size_t i = 0; i < count; i++)
+        if (!_stricmp(dll, table[i].dll) && !strcmp(fn, table[i].name)) return &table[i];
+    return NULL;
+}
 
 static int patch_imports(HMODULE module)
 {
@@ -314,15 +318,15 @@ static int patch_imports(HMODULE module)
         for (; names->u1.AddressOfData; names++, slots++) {
             if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal)) continue;
             const char *fn = (const char *)((IMAGE_IMPORT_BY_NAME *)(base + names->u1.AddressOfData))->Name;
-            for (size_t i = 0; i < sizeof(hooks) / sizeof(hooks[0]); i++) {
-                if (_stricmp(dll, hooks[i].dll) || strcmp(fn, hooks[i].name)) continue;
-                DWORD old;
-                VirtualProtect(&slots->u1.Function, sizeof(slots->u1.Function), PAGE_READWRITE, &old);
-                slots->u1.Function = (ULONG_PTR)hooks[i].fn;
-                VirtualProtect(&slots->u1.Function, sizeof(slots->u1.Function), old, &old);
-                shim_log("hooked %s!%s", dll, fn);
-                patched++;
-            }
+            const struct hook *h = find_hook(hooks, sizeof(hooks) / sizeof(hooks[0]), dll, fn);
+            if (!h) h = find_hook(native_hooks, native_hook_count, dll, fn);
+            if (!h) continue;
+            DWORD old;
+            VirtualProtect(&slots->u1.Function, sizeof(slots->u1.Function), PAGE_READWRITE, &old);
+            slots->u1.Function = (ULONG_PTR)h->fn;
+            VirtualProtect(&slots->u1.Function, sizeof(slots->u1.Function), old, &old);
+            shim_log("hooked %s!%s", dll, fn);
+            patched++;
         }
     }
     return patched;
@@ -339,8 +343,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
     shim_log("weshim loaded into %s (pid %lu)", exe, GetCurrentProcessId());
     shim_log("patched %d imports", patch_imports(GetModuleHandleW(NULL)));
 
-    /* The thread starts once the loader lock is released. */
+    /* The threads start once the loader lock is released. */
     shell_ready = CreateEventW(NULL, TRUE, FALSE, NULL);
     CloseHandle(CreateThread(NULL, 0, shell_thread, inst, 0, NULL));
+    native_init();
     return TRUE;
 }
