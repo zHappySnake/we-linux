@@ -70,6 +70,11 @@ setup_kwin() {
     log "KWin rule and script installed"
 }
 
+# The Wine process itself: its command line starts with the executable's path. Our own processes
+# (and Steam's wrappers) only mention wallpaper64.exe further along, so they must not match.
+WE_PROCESS='^[^ ]*[/\\]wallpaper64\.exe( |$)'
+we_running() { pgrep -f "$WE_PROCESS" >/dev/null; }
+
 # Safety net (second line behind the KWin script's): if the desktop window isn't kept below, it covers
 # every other window, so stop Wallpaper Engine instead of leaving the user stuck behind it.
 # _NET_WM_STATE_FULLSCREEN alone isn't checked: Wine sets it before mapping and KWin leaves it there
@@ -77,14 +82,14 @@ setup_kwin() {
 guard_desktop() {
     set +e
     local id state
-    while pgrep -f 'wallpaper64\.exe' >/dev/null || (( SECONDS < 120 )); do
+    while we_running || (( SECONDS < 120 )); do
         id="$(xwininfo -root -tree 2>/dev/null | awk -v t="\"$DESKTOP_TITLE\":" 'index($0, t) { print $1; exit }')"
         if [[ -n "$id" ]] && ! xprop -id "$id" _NET_WM_STATE 2>/dev/null | grep -q _NET_WM_STATE_BELOW; then
             sleep 1   # give KWin a moment to apply the rule after mapping
             state="$(xprop -id "$id" _NET_WM_STATE 2>/dev/null)"
             if [[ -n "$state" && "$state" != *_NET_WM_STATE_BELOW* ]]; then
                 log "desktop window is not kept below ($state); stopping Wallpaper Engine"
-                pkill -f 'wallpaper64\.exe'
+                pkill -f "$WE_PROCESS"
                 return
             fi
         fi
@@ -104,6 +109,14 @@ TARGET=("$WELAUNCH" "$(winpath "$ROOT/build/weshim.dll")" "$WE_DIR/wallpaper64.e
 
 [[ "${XDG_CURRENT_DESKTOP:-}" == *KDE* ]] || { log "only KDE Plasma is supported for now."; exit 1; }
 
+# Wine follows XWayland's Xcursor resources, which can lag behind the theme chosen in Plasma;
+# hand it Plasma's own setting.
+if [[ -z "${XCURSOR_THEME:-}" ]] && theme="$(kreadconfig6 --file kcminputrc --group Mouse --key cursorTheme 2>/dev/null)" && [[ -n "$theme" ]]; then
+    export XCURSOR_THEME="$theme"
+    size="$(kreadconfig6 --file kcminputrc --group Mouse --key cursorSize 2>/dev/null)"
+    [[ -n "$size" ]] && export XCURSOR_SIZE="$size"
+fi
+
 # The agent relays the native window list from KWin to the shim through this file.
 STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/we-linux"
 mkdir -p "$STATE_DIR"
@@ -117,7 +130,7 @@ setup_kwin || { kill "$AGENT_PID"; log "cannot pin the desktop window on this se
 # Runs alongside Wallpaper Engine (this script execs into it) and cleans up after it.
 supervise() {
     guard_desktop
-    while pgrep -f 'wallpaper64\.exe' >/dev/null; do sleep 2; done
+    while we_running; do sleep 2; done
     kill "$AGENT_PID" 2>/dev/null
 }
 supervise &

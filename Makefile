@@ -11,8 +11,10 @@ $(BUILD):
 	mkdir -p $@
 
 # Windows side, loaded into Wallpaper Engine under Proton.
-$(BUILD)/weshim.dll: shim/weshim.c shim/native.c shim/shim.h | $(BUILD)
-	$(CC64) $(CFLAGS) -shared -o $@ shim/weshim.c shim/native.c $(LDFLAGS) -lgdi32 -ldwmapi
+SHIM_SRC := shim/weshim.c shim/native.c shim/media.c
+
+$(BUILD)/weshim.dll: $(SHIM_SRC) shim/shim.h | $(BUILD)
+	$(CC64) $(CFLAGS) -shared -o $@ $(SHIM_SRC) $(LDFLAGS) -lgdi32 -ldwmapi -lole32 -lmfplat
 
 $(BUILD)/welaunch.exe: shim/welaunch.c | $(BUILD)
 	$(CC64) $(CFLAGS) -municode -mwindows -o $@ $< $(LDFLAGS)

@@ -17,4 +17,8 @@ extern const size_t native_hook_count;
 void native_init(void);
 BOOL native_enum(WNDENUMPROC proc, LPARAM lp);
 
+/* media.c: Wallpaper Engine's video playback through Media Foundation. */
+extern const struct hook media_hooks[];
+extern const size_t media_hook_count;
+
 #endif

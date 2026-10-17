@@ -118,6 +118,9 @@ static LRESULT CALLBACK shell_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         break;
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;
+    case WM_SETCURSOR:
+        SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_ARROW));
+        return TRUE;
     case WM_CLOSE:
         return 0;  /* the desktop is not closable */
     }
@@ -148,6 +151,9 @@ static DWORD WINAPI shell_thread(void *arg)
     shell_defview = CreateWindowExW(0, L"SHELLDLL_DefView", L"", WS_CHILD, 0, 0, w, h, shell_iconlayer, NULL, inst, NULL);
     shell_progman = CreateWindowExW(ex, L"Progman", L"Program Manager", WS_POPUP, r.left, r.top, w, h, NULL, NULL, inst, NULL);
     ShowWindow(shell_host, SW_SHOWNOACTIVATE);
+    /* Wine shows the cursor of the thread that owns the X11 window under the pointer. That's this
+     * thread for the whole desktop, wallpaper windows included, so it must hold a visible cursor. */
+    SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_ARROW));
     shim_log("desktop created at %ld,%ld %dx%d: progman=%s iconlayer=%s host=%s", r.left, r.top, w, h,
              describe(shell_progman), describe(shell_iconlayer), describe(shell_host));
     SetEvent(shell_ready);
@@ -225,12 +231,25 @@ static HWND WINAPI hook_SetParent(HWND child, HWND parent)
     return r;
 }
 
+/*
+ * Some of Wallpaper Engine's wallpaper window classes have no cursor; on Windows the icon layer
+ * in front of them provides one. Give those classes the standard arrow (drawn in the user's
+ * cursor theme) so the pointer doesn't vanish over the wallpaper.
+ */
+static void ensure_cursor(HWND hwnd)
+{
+    if (GetClassLongPtrW(hwnd, GCLP_HCURSOR)) return;
+    SetClassLongPtrW(hwnd, GCLP_HCURSOR, (LONG_PTR)LoadCursorW(NULL, (LPCWSTR)IDC_ARROW));
+    shim_log("gave %s the arrow cursor", describe(hwnd));
+}
+
 static HWND WINAPI hook_CreateWindowExW(DWORD ex, LPCWSTR cls, LPCWSTR name, DWORD style, int x, int y, int w, int h,
                                         HWND parent, HMENU menu, HINSTANCE inst, LPVOID param)
 {
     HWND r = CreateWindowExW(ex, cls, name, style, x, y, w, h, parent, menu, inst, param);
     shim_log("CreateWindowExW(ex=0x%lx, %s, %s, style=0x%lx, %d,%d %dx%d, parent=%s) -> %s",
          ex, wstr(cls), wstr(name), style, x, y, w, h, describe(parent), describe(r));
+    if (r && parent && parent == shell_host) ensure_cursor(r);
     return r;
 }
 
@@ -244,8 +263,24 @@ static BOOL WINAPI hook_SetWindowPos(HWND hwnd, HWND after, int x, int y, int w,
     return r;
 }
 
+/*
+ * Wallpaper Engine makes the desktop click-through (WS_EX_TRANSPARENT) so clicks reach the
+ * icons in front of it on Windows. Wine turns that into an empty X11 input region, so the
+ * pointer falls through to the Linux desktop and Wallpaper Engine never sees the mouse. We
+ * have no icon layer, so the host keeps receiving input; KWin keeps it from taking focus.
+ */
+static LONG_PTR keep_host_input(HWND hwnd, int idx, LONG_PTR val)
+{
+    if (hwnd == shell_host && idx == GWL_EXSTYLE && (val & WS_EX_TRANSPARENT)) {
+        shim_log("keeping mouse input on the desktop: dropping WS_EX_TRANSPARENT");
+        val &= ~(LONG_PTR)WS_EX_TRANSPARENT;
+    }
+    return val;
+}
+
 static LONG WINAPI hook_SetWindowLongW(HWND hwnd, int idx, LONG val)
 {
+    val = (LONG)keep_host_input(hwnd, idx, val);
     LONG r = SetWindowLongW(hwnd, idx, val);
     shim_log("SetWindowLongW(%s, %d, 0x%lx) -> 0x%lx", describe(hwnd), idx, val, r);
     return r;
@@ -253,10 +288,24 @@ static LONG WINAPI hook_SetWindowLongW(HWND hwnd, int idx, LONG val)
 
 static LONG_PTR WINAPI hook_SetWindowLongPtrW(HWND hwnd, int idx, LONG_PTR val)
 {
+    val = keep_host_input(hwnd, idx, val);
     LONG_PTR r = SetWindowLongPtrW(hwnd, idx, val);
     if (idx == GWL_STYLE || idx == GWL_EXSTYLE || idx == GWLP_HWNDPARENT)
         shim_log("SetWindowLongPtrW(%s, %d, 0x%llx) -> 0x%llx", describe(hwnd), idx, (unsigned long long)val, (unsigned long long)r);
     return r;
+}
+
+/*
+ * Wallpaper Engine hides the cursor when it creates a wallpaper window. On Windows the icon
+ * layer is always on top, so the wallpaper never has the pointer and that goes unnoticed; here
+ * the wallpaper is what's under the pointer, so the cursor would vanish over the desktop.
+ */
+static int WINAPI hook_ShowCursor(BOOL show)
+{
+    static LONG logged;
+    if (show) return ShowCursor(TRUE);
+    if (!InterlockedExchange(&logged, 1)) shim_log("ignoring ShowCursor(FALSE) so the cursor stays visible over the wallpaper");
+    return 0;
 }
 
 static BOOL WINAPI hook_SystemParametersInfoW(UINT action, UINT uparam, PVOID pv, UINT winini)
@@ -291,6 +340,7 @@ static const struct hook hooks[] = {
     { "user32.dll",   "SetWindowLongPtrW",     hook_SetWindowLongPtrW },
 #endif
     { "user32.dll",   "SystemParametersInfoW", hook_SystemParametersInfoW },
+    { "user32.dll",   "ShowCursor",            hook_ShowCursor },
     { "kernel32.dll", "CreateProcessW",        hook_CreateProcessW },
 };
 
@@ -320,6 +370,7 @@ static int patch_imports(HMODULE module)
             const char *fn = (const char *)((IMAGE_IMPORT_BY_NAME *)(base + names->u1.AddressOfData))->Name;
             const struct hook *h = find_hook(hooks, sizeof(hooks) / sizeof(hooks[0]), dll, fn);
             if (!h) h = find_hook(native_hooks, native_hook_count, dll, fn);
+            if (!h) h = find_hook(media_hooks, media_hook_count, dll, fn);
             if (!h) continue;
             DWORD old;
             VirtualProtect(&slots->u1.Function, sizeof(slots->u1.Function), PAGE_READWRITE, &old);

@@ -56,6 +56,15 @@ looks for Explorer's `Progman` / `WorkerW` windows, which Wine doesn't have.
   windows on screen to `we-linux-agent`, and `weshim.dll` presents them to Wallpaper Engine as
   ordinary windows, so its own playback settings apply to your Linux apps too.
 
+`weshim.dll` also covers a few places where Windows and Proton behave differently:
+
+- **Mouse input.** Wallpaper Engine makes the desktop click-through so clicks reach the icons in
+  front of it. There are no icons here, so the shim keeps the wallpaper receiving the mouse, and
+  keeps the cursor visible (Wallpaper Engine hides it, since on Windows the icons provide one).
+- **Video colors.** Wallpaper Engine asks Media Foundation for BGRA frames but draws them into RGBA
+  textures; Windows converts between the two, Proton doesn't, which swaps red and blue. The shim
+  requests the format Wallpaper Engine actually draws into.
+
 ## Build
 
 ```sh
@@ -73,6 +82,14 @@ In Steam, open Wallpaper Engine → Properties:
 Or run `bin/we-linux` directly while Steam is running.
 
 Set `WE_LINUX_DEBUG=1` to write Proton and shim logs to `logs/`.
+
+## Known limitations
+
+- **Clone mode** (one wallpaper mirrored to several monitors) shows nothing on the extra monitors:
+  it relies on DirectComposition, which Proton doesn't implement. Choose the wallpaper on each
+  monitor individually, or stretch it across them.
+- **Playback speed** has no effect on video wallpapers: Proton's media engine accepts the setting
+  but doesn't apply it.
 
 ## Uninstall
 
