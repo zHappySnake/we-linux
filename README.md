@@ -59,7 +59,7 @@ looks for Explorer's `Progman` / `WorkerW` windows, which Wine doesn't have.
 ## Build
 
 ```sh
-sudo pacman -S --needed base-devel mingw-w64-gcc xorg-xwininfo xorg-xprop xorg-xrandr
+sudo pacman -S --needed base-devel mingw-w64-gcc xorg-xwininfo xorg-xprop
 make
 ```
 

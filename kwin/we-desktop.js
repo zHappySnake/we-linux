@@ -1,7 +1,7 @@
 // Companion to the forced window rule that we-linux installs for Wallpaper Engine's desktop
-// window (created by weshim.dll). The rule handles stacking, borders and geometry; this script:
+// window (created by weshim.dll). The rule handles stacking and borders; this script:
 //
-//  - puts the window on every virtual desktop;
+//  - makes the window span every monitor and puts it on every virtual desktop;
 //  - minimizes it if it ever ends up fullscreen or not kept below, since it would then cover
 //    every other window;
 //  - reports the native windows on screen to we-linux-agent, so Wallpaper Engine can apply its
@@ -31,9 +31,17 @@ function checkDesktop(w) {
     w.minimized = true;
 }
 
+function fitDesktop(w) {
+    const r = workspace.virtualScreenGeometry;
+    const g = w.frameGeometry;
+    if (g.x == r.x && g.y == r.y && g.width == r.width && g.height == r.height) return;
+    w.frameGeometry = { x: r.x, y: r.y, width: r.width, height: r.height };
+}
+
 function trackDesktop(w) {
     desktopWindow = w;
     w.onAllDesktops = true;
+    fitDesktop(w);
     checkDesktop(w);
     on(w, "fullScreenChanged", function () { checkDesktop(w); });
     on(w, "keepBelowChanged", function () { checkDesktop(w); });
@@ -106,6 +114,10 @@ function trackWindow(w) {
 
 workspace.windowList().forEach(trackWindow);
 on(workspace, "windowAdded", trackWindow);
+on(workspace, "virtualScreenGeometryChanged", function () {
+    if (desktopWindow) fitDesktop(desktopWindow);
+    report();
+});
 on(workspace, "windowRemoved", function (w) {
     if (w === desktopWindow) desktopWindow = null;
     delete ids[w.internalId.toString()];
