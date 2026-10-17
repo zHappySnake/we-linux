@@ -6,7 +6,8 @@ Proton, with its original UI, and show its wallpapers as your desktop background
 You need to own and install Wallpaper Engine through Steam. This project ships no Wallpaper Engine
 files and changes none on disk; it only adjusts how the program behaves while it runs.
 
-Currently supported: Arch Linux, KDE Plasma 6 (Wayland or X11).
+Currently supported: Arch Linux with KDE Plasma 6 on Wayland, using Proton Experimental. (Plasma on
+X11 may work but hasn't been tested.)
 
 ## How this differs from other Linux options
 
@@ -65,23 +66,64 @@ looks for Explorer's `Progman` / `WorkerW` windows, which Wine doesn't have.
   textures; Windows converts between the two, Proton doesn't, which swaps red and blue. The shim
   requests the format Wallpaper Engine actually draws into.
 
-## Build
+## Requirements
 
-```sh
-sudo pacman -S --needed base-devel mingw-w64-gcc xorg-xwininfo xorg-xprop
-make
-```
+- Arch Linux with KDE Plasma 6 (Wayland session).
+- Steam, with Wallpaper Engine installed.
+- Build tools and a few small utilities:
 
-## Use
+  ```sh
+  sudo pacman -S --needed base-devel mingw-w64-gcc qt6-tools xorg-xwininfo xorg-xprop
+  ```
 
-In Steam, open Wallpaper Engine → Properties:
+## Install
 
-- Compatibility: force Proton (Proton Experimental is tested).
-- Launch options: `/path/to/wallpaperengine-linux/bin/we-linux %command%`
+1. Get the source somewhere permanent (Steam will run it from this path, so don't move it later
+   without updating the launch option):
 
-Or run `bin/we-linux` directly while Steam is running.
+   ```sh
+   git clone <repository-url> ~/wallpaperengine-linux
+   cd ~/wallpaperengine-linux
+   make
+   ```
 
-Set `WE_LINUX_DEBUG=1` to write Proton and shim logs to `logs/`.
+2. In Steam, right-click Wallpaper Engine → **Properties**:
+   - **Compatibility:** tick "Force the use of a specific Steam Play compatibility tool" and choose
+     **Proton Experimental**.
+   - **General → Launch options:** enter the full path to `bin/we-linux` followed by `%command%`,
+     for example:
+
+     ```
+     /home/you/wallpaperengine-linux/bin/we-linux %command%
+     ```
+
+3. Press **Play**. If Steam asks which version to launch, either choice is fine: `we-linux` always
+   starts the 64-bit build.
+
+On the first launch Wallpaper Engine shows its welcome dialog; go through it, then pick a wallpaper
+as you would on Windows. After that, Wallpaper Engine starts with your last wallpapers. Quit it
+from its tray icon.
+
+### What `we-linux` changes on your system
+
+- Adds a window rule, "Wallpaper Engine desktop (we-linux)", to `~/.config/kwinrulesrc`.
+- Loads a KWin script (`kwin/we-desktop.js`) for the current session.
+- Keeps the list of on-screen windows for Wallpaper Engine in `~/.cache/we-linux/`.
+
+It never modifies Wallpaper Engine's installation.
+
+## Troubleshooting
+
+- **Logs.** Put `WE_LINUX_DEBUG=1` in front of the launch option
+  (`WE_LINUX_DEBUG=1 /home/you/wallpaperengine-linux/bin/we-linux %command%`) to write Proton's log
+  and the shim's log to `logs/` in this directory. Remove it again afterwards; it slows Wine down.
+- **Wallpaper Engine stopped right after starting.** As a safety net, `we-linux` stops Wallpaper
+  Engine if its wallpaper window ever ends up in front of other windows instead of behind them, and
+  the KWin script minimizes it. The reason is in the log and in `journalctl --user -t kwin_wayland`.
+- **"Safe Start" dialog.** Wallpaper Engine shows this after it was stopped without quitting (for
+  example with Steam's Stop button). Press OK to restore your wallpapers.
+- **Running outside Steam.** For development, `bin/we-linux` with no arguments starts Wallpaper
+  Engine through Proton Experimental itself. Steam must be running.
 
 ## Known limitations
 
@@ -93,5 +135,13 @@ Set `WE_LINUX_DEBUG=1` to write Proton and shim logs to `logs/`.
 
 ## Uninstall
 
-Remove the launch option, then delete the "Wallpaper Engine desktop (we-linux)" rule in
-System Settings → Window Management → Window Rules.
+1. Remove the launch option in Steam (and the forced Proton version, if you like).
+2. Delete the "Wallpaper Engine desktop (we-linux)" rule in System Settings → Window Management →
+   Window Rules.
+3. Remove the cache and the source:
+
+   ```sh
+   rm -rf ~/.cache/we-linux ~/wallpaperengine-linux
+   ```
+
+The KWin script goes away when you log out.
