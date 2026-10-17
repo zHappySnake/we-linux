@@ -1,4 +1,10 @@
 /build/
+# debug logs from older versions, which wrote them into the checkout
 /logs/
 *.o
-*.dll
+
+# makepkg output when building from packaging/aur
+/packaging/aur/src/
+/packaging/aur/pkg/
+/packaging/aur/we-linux/
+/packaging/aur/*.pkg.tar.*

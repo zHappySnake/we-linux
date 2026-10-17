@@ -70,31 +70,28 @@ looks for Explorer's `Progman` / `WorkerW` windows, which Wine doesn't have.
 
 - Arch Linux with KDE Plasma 6 (Wayland session).
 - Steam, with Wallpaper Engine installed.
-- Build tools and a few small utilities:
-
-  ```sh
-  sudo pacman -S --needed base-devel mingw-w64-gcc qt6-tools xorg-xwininfo xorg-xprop
-  ```
 
 ## Install
 
-1. Get the source somewhere permanent (Steam will run it from this path, so don't move it later
-   without updating the launch option):
+1. Build and install from source:
 
    ```sh
-   git clone https://github.com/zHappySnake/we-linux.git ~/we-linux
-   cd ~/we-linux
+   sudo pacman -S --needed base-devel git mingw-w64-gcc xorg-xwininfo xorg-xprop
+   git clone https://github.com/zHappySnake/we-linux.git
+   cd we-linux
    make
+   sudo make install
    ```
+
+   This installs to `/usr/local`; pass `PREFIX=/usr` to `make install` to change that.
 
 2. In Steam, right-click Wallpaper Engine → **Properties**:
    - **Compatibility:** tick "Force the use of a specific Steam Play compatibility tool" and choose
      **Proton Experimental**.
-   - **General → Launch options:** enter the full path to `bin/we-linux` followed by `%command%`,
-     for example:
+   - **General → Launch options:**
 
      ```
-     /home/you/we-linux/bin/we-linux %command%
+     /usr/local/bin/we-linux %command%
      ```
 
 3. Press **Play**. If Steam asks which version to launch, either choice is fine: `we-linux` always
@@ -104,26 +101,31 @@ On the first launch Wallpaper Engine shows its welcome dialog; go through it, th
 as you would on Windows. After that, Wallpaper Engine starts with your last wallpapers. Quit it
 from its tray icon.
 
+To work on we-linux itself, skip `make install` and point the launch option at `bin/we-linux` in
+your checkout; it uses the files in `build/` directly.
+
 ### What `we-linux` changes on your system
 
 - Adds a window rule, "Wallpaper Engine desktop (we-linux)", to `~/.config/kwinrulesrc`.
-- Loads a KWin script (`kwin/we-desktop.js`) for the current session.
-- Keeps the list of on-screen windows for Wallpaper Engine in `~/.cache/we-linux/`.
+- Loads a KWin script (`we-desktop.js`) for the current session.
+- Keeps a copy of its Windows-side files and the list of on-screen windows for Wallpaper Engine in
+  `~/.cache/we-linux/`. (Proton runs in Steam's runtime container, which can't see `/usr` but can
+  see your home directory.)
 
 It never modifies Wallpaper Engine's installation.
 
 ## Troubleshooting
 
 - **Logs.** Put `WE_LINUX_DEBUG=1` in front of the launch option
-  (`WE_LINUX_DEBUG=1 /home/you/we-linux/bin/we-linux %command%`) to write Proton's log
-  and the shim's log to `logs/` in this directory. Remove it again afterwards; it slows Wine down.
+  (`WE_LINUX_DEBUG=1 /usr/local/bin/we-linux %command%`) to write Proton's log and the shim's log
+  to `~/.local/state/we-linux/logs/`. Remove it again afterwards; it slows Wine down.
 - **Wallpaper Engine stopped right after starting.** As a safety net, `we-linux` stops Wallpaper
   Engine if its wallpaper window ever ends up in front of other windows instead of behind them, and
   the KWin script minimizes it. The reason is in the log and in `journalctl --user -t kwin_wayland`.
 - **"Safe Start" dialog.** Wallpaper Engine shows this after it was stopped without quitting (for
   example with Steam's Stop button). Press OK to restore your wallpapers.
-- **Running outside Steam.** For development, `bin/we-linux` with no arguments starts Wallpaper
-  Engine through Proton Experimental itself. Steam must be running.
+- **Running outside Steam.** For development, `we-linux` with no arguments starts Wallpaper Engine
+  through Proton Experimental itself. Steam must be running.
 
 ## Known limitations
 
@@ -138,10 +140,10 @@ It never modifies Wallpaper Engine's installation.
 1. Remove the launch option in Steam (and the forced Proton version, if you like).
 2. Delete the "Wallpaper Engine desktop (we-linux)" rule in System Settings → Window Management →
    Window Rules.
-3. Remove the cache and the source:
+3. Remove the program (`sudo make uninstall` in the source directory) and its cache and logs:
 
    ```sh
-   rm -rf ~/.cache/we-linux ~/we-linux
+   rm -rf ~/.cache/we-linux ~/.local/state/we-linux
    ```
 
 The KWin script goes away when you log out.

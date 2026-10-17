@@ -2,25 +2,33 @@
 # we-linux: run the Steam copy of Wallpaper Engine under Proton as a desktop wallpaper.
 #
 # Usage:
-#   Steam launch option:  /path/to/we-linux %command%
+#   Steam launch option:  we-linux %command%
 #   Standalone (dev):     we-linux            # launches through Proton itself
 #
 # Environment:
-#   WE_LINUX_DEBUG=1      enable Proton/Wine logging into ./logs (or $WE_LINUX_LOGDIR)
-#   WE_LINUX_PROTON=name  Proton directory under steamapps/common (default: Proton - Experimental)
+#   WE_LINUX_DEBUG=1      write Proton and shim logs to ~/.local/state/we-linux/logs (or $WE_LINUX_LOGDIR)
+#   WE_LINUX_PROTON=name  standalone only: Proton directory under steamapps/common (default: Proton - Experimental)
 set -euo pipefail
 
 APPID=431960
-ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 STEAM_ROOT="${STEAM_ROOT:-$HOME/.local/share/Steam}"
+
+# Where the built pieces live. `make install` fills these in; in a source checkout they're unset
+# and we use the checkout itself.
+LIBDIR='@LIBDIR@'
+DATADIR='@DATADIR@'
+if [[ "$LIBDIR" == @* ]]; then
+    ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+    LIBDIR="$ROOT/build" DATADIR="$ROOT"
+fi
 
 log() { printf '[we-linux] %s\n' "$*" >&2; }
 
-# Locate the library folder that holds Wallpaper Engine.
+# Steam library folder that has app $1 installed.
 find_library() {
     local vdf="$STEAM_ROOT/steamapps/libraryfolders.vdf" lib
     while read -r lib; do
-        if [[ -f "$lib/steamapps/appmanifest_$APPID.acf" ]]; then
+        if [[ -f "$lib/steamapps/appmanifest_$1.acf" ]]; then
             printf '%s\n' "$lib"
             return 0
         fi
@@ -28,12 +36,12 @@ find_library() {
     return 1
 }
 
-LIBRARY="$(find_library)" || { log "Wallpaper Engine (app $APPID) is not installed through Steam."; exit 1; }
+LIBRARY="$(find_library $APPID)" || { log "Wallpaper Engine (app $APPID) is not installed through Steam."; exit 1; }
 WE_DIR="$LIBRARY/steamapps/common/wallpaper_engine"
 COMPAT_DATA="$LIBRARY/steamapps/compatdata/$APPID"
 
 if [[ "${WE_LINUX_DEBUG:-0}" == 1 ]]; then
-    LOGDIR="${WE_LINUX_LOGDIR:-$ROOT/logs}"
+    LOGDIR="${WE_LINUX_LOGDIR:-${XDG_STATE_HOME:-$HOME/.local/state}/we-linux/logs}"
     mkdir -p "$LOGDIR"
     export PROTON_LOG=1 PROTON_LOG_DIR="$LOGDIR"
     export WINEDEBUG="${WINEDEBUG:-+seh,+loaddll,err+all,warn+win}"
@@ -43,13 +51,14 @@ fi
 
 DESKTOP_TITLE="Wallpaper Engine Desktop"   # must match DESKTOP_TITLE in shim/weshim.c
 
+kwin_call() { busctl --user call org.kde.KWin "$@" >/dev/null; }
+
 # KDE: a forced window rule keeps the desktop window borderless and below all other windows.
 # "Force" also makes KWin ignore Wine's fullscreen request, which would otherwise put the window
 # above everything, panels included. The KWin script sizes it to span every monitor.
 setup_kwin() {
-    local rc=kwinrulesrc g=we-linux-desktop rules qdbus key
+    local rc=kwinrulesrc g=we-linux-desktop rules key
     command -v kwriteconfig6 >/dev/null && command -v kreadconfig6 >/dev/null || { log "kwriteconfig6 not found"; return 1; }
-    qdbus="$(command -v qdbus6 || command -v qdbus)" || { log "qdbus not found"; return 1; }
 
     set_rule() { kwriteconfig6 --file "$rc" --group "$g" --key "$1" -- "$2"; }
     set_rule Description "Wallpaper Engine desktop (we-linux)"
@@ -62,11 +71,11 @@ setup_kwin() {
 
     rules="$(kreadconfig6 --file "$rc" --group General --key rules)"
     [[ ",$rules," == *",$g,"* ]] || kwriteconfig6 --file "$rc" --group General --key rules -- "${rules:+$rules,}$g"
-    "$qdbus" org.kde.KWin /KWin reconfigure >/dev/null
+    kwin_call /KWin org.kde.KWin reconfigure || { log "could not reach KWin over D-Bus"; return 1; }
 
-    "$qdbus" org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript we-desktop >/dev/null 2>&1 || true
-    "$qdbus" org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$ROOT/kwin/we-desktop.js" we-desktop >/dev/null &&
-        "$qdbus" org.kde.KWin /Scripting org.kde.kwin.Scripting.start >/dev/null || { log "could not load the KWin script"; return 1; }
+    kwin_call /Scripting org.kde.kwin.Scripting unloadScript s we-desktop || true
+    kwin_call /Scripting org.kde.kwin.Scripting loadScript ss "$DATADIR/kwin/we-desktop.js" we-desktop &&
+        kwin_call /Scripting org.kde.kwin.Scripting start || { log "could not load the KWin script"; return 1; }
     log "KWin rule and script installed"
 }
 
@@ -97,17 +106,23 @@ guard_desktop() {
     done
 }
 
-# Built by `make`. Windows-side paths go through Wine's Z: drive.
-winpath() { printf 'Z:%s' "${1//\//\\}"; }
-WELAUNCH="$ROOT/build/welaunch.exe"
-AGENT="$ROOT/build/we-linux-agent"
-for f in "$WELAUNCH" "$ROOT/build/weshim.dll" "$AGENT"; do
-    [[ -f "$f" ]] || { log "$f is missing; run 'make' in $ROOT first."; exit 1; }
+AGENT="$LIBDIR/we-linux-agent"
+for f in welaunch.exe weshim.dll we-linux-agent; do
+    [[ -f "$LIBDIR/$f" ]] || { log "$LIBDIR/$f is missing; build it with 'make' first."; exit 1; }
 done
-# launcher.exe would pick wallpaper32.exe; we always run the 64-bit build with the shim loaded.
-TARGET=("$WELAUNCH" "$(winpath "$ROOT/build/weshim.dll")" "$WE_DIR/wallpaper64.exe")
 
 [[ "${XDG_CURRENT_DESKTOP:-}" == *KDE* ]] || { log "only KDE Plasma is supported for now."; exit 1; }
+
+# Runtime state: the native window list the agent relays from KWin, and the Windows-side files.
+STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/we-linux"
+mkdir -p "$STATE_DIR/bin"
+
+# Proton runs inside Steam's runtime container, which has its own /usr but shares the home
+# directory, so the Windows-side files are run from there.
+winpath() { printf 'Z:%s' "${1//\//\\}"; }
+install -C -m644 "$LIBDIR/welaunch.exe" "$LIBDIR/weshim.dll" "$STATE_DIR/bin/"
+# launcher.exe would pick wallpaper32.exe; we always run the 64-bit build with the shim loaded.
+TARGET=("$STATE_DIR/bin/welaunch.exe" "$(winpath "$STATE_DIR/bin/weshim.dll")" "$WE_DIR/wallpaper64.exe")
 
 # Wine follows XWayland's Xcursor resources, which can lag behind the theme chosen in Plasma;
 # hand it Plasma's own setting.
@@ -117,9 +132,6 @@ if [[ -z "${XCURSOR_THEME:-}" ]] && theme="$(kreadconfig6 --file kcminputrc --gr
     [[ -n "$size" ]] && export XCURSOR_SIZE="$size"
 fi
 
-# The agent relays the native window list from KWin to the shim through this file.
-STATE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/we-linux"
-mkdir -p "$STATE_DIR"
 export WE_LINUX_STATE="$(winpath "$STATE_DIR/windows")"
 pkill -x we-linux-agent 2>/dev/null || true
 "$AGENT" "$STATE_DIR/windows" &
@@ -159,8 +171,13 @@ fi
 # Standalone: build the same command Steam would. Steam must be running so steam_api can verify ownership.
 pgrep -x steam >/dev/null || { log "Steam must be running."; exit 1; }
 PROTON_DIR="$STEAM_ROOT/steamapps/common/${WE_LINUX_PROTON:-Proton - Experimental}"
-RUNTIME="$STEAM_ROOT/steamapps/common/SteamLinuxRuntime_sniper/_v2-entry-point"
 [[ -x "$PROTON_DIR/proton" ]] || { log "Proton not found at $PROTON_DIR"; exit 1; }
+
+# Proton names the Steam Linux Runtime it needs by app id in its tool manifest.
+runtime_id="$(sed -n 's/.*"require_tool_appid"[[:space:]]*"\([0-9]*\)".*/\1/p' "$PROTON_DIR/toolmanifest.vdf")"
+runtime_lib="$(find_library "$runtime_id")" || { log "Steam Linux Runtime (app $runtime_id) is not installed."; exit 1; }
+runtime_dir="$(sed -n 's/^[[:space:]]*"installdir"[[:space:]]*"\(.*\)"/\1/p' "$runtime_lib/steamapps/appmanifest_$runtime_id.acf")"
+RUNTIME="$runtime_lib/steamapps/common/$runtime_dir/_v2-entry-point"
 
 export STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM_ROOT"
 export STEAM_COMPAT_DATA_PATH="$COMPAT_DATA"
