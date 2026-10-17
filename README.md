@@ -145,3 +145,11 @@ It never modifies Wallpaper Engine's installation.
    ```
 
 The KWin script goes away when you log out.
+
+## License
+
+we-linux is free software, licensed under the GNU General Public License, version 3 or (at your
+option) any later version. See [LICENSE](LICENSE).
+
+Wallpaper Engine is proprietary software by Wallpaper Engine Team and is not covered by this
+license; you need your own copy from Steam.
