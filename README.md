@@ -1,4 +1,4 @@
-# wallpaperengine-linux
+# we-linux
 
 Run the Steam copy of [Wallpaper Engine](https://store.steampowered.com/app/431960/) on Linux under
 Proton, with its original UI, and show its wallpapers as your desktop background.
@@ -82,8 +82,8 @@ looks for Explorer's `Progman` / `WorkerW` windows, which Wine doesn't have.
    without updating the launch option):
 
    ```sh
-   git clone <repository-url> ~/wallpaperengine-linux
-   cd ~/wallpaperengine-linux
+   git clone https://github.com/zHappySnake/we-linux.git ~/we-linux
+   cd ~/we-linux
    make
    ```
 
@@ -94,7 +94,7 @@ looks for Explorer's `Progman` / `WorkerW` windows, which Wine doesn't have.
      for example:
 
      ```
-     /home/you/wallpaperengine-linux/bin/we-linux %command%
+     /home/you/we-linux/bin/we-linux %command%
      ```
 
 3. Press **Play**. If Steam asks which version to launch, either choice is fine: `we-linux` always
@@ -115,7 +115,7 @@ It never modifies Wallpaper Engine's installation.
 ## Troubleshooting
 
 - **Logs.** Put `WE_LINUX_DEBUG=1` in front of the launch option
-  (`WE_LINUX_DEBUG=1 /home/you/wallpaperengine-linux/bin/we-linux %command%`) to write Proton's log
+  (`WE_LINUX_DEBUG=1 /home/you/we-linux/bin/we-linux %command%`) to write Proton's log
   and the shim's log to `logs/` in this directory. Remove it again afterwards; it slows Wine down.
 - **Wallpaper Engine stopped right after starting.** As a safety net, `we-linux` stops Wallpaper
   Engine if its wallpaper window ever ends up in front of other windows instead of behind them, and
@@ -141,7 +141,7 @@ It never modifies Wallpaper Engine's installation.
 3. Remove the cache and the source:
 
    ```sh
-   rm -rf ~/.cache/we-linux ~/wallpaperengine-linux
+   rm -rf ~/.cache/we-linux ~/we-linux
    ```
 
 The KWin script goes away when you log out.
